@@ -12,11 +12,26 @@ groups:
     - chatperms.basic
     - chatperms.vip
   admin:
-    chat_format: '§c[Admin] {FACTION} {PLAYER}: §f{MESSAGE}'
+    chat_format: '§c[Admin] {FACTION}{PLAYER}: §f{MESSAGE}'
     nametag_format: §c[Admin] {FACTION}{PLAYER} {HEALTH}
     permissions:
     - chatperms.basic
     - chatperms.vip
     - chatperms.admin
 rename_nametag: true
+
+messages:
+  no_permission: "§cYou don't have permission to use this command."
+  player_not_found: "§cPlayer not found."
+  group_not_found: "§cGroup not found."
+  group_already_exists: "§cGroup already exists."
+  permission_already_exists: "§cPermission already exists in the group."
+  permission_not_found: "§cPermission not found in the group."
+  group_created: "§aGroup §6{GROUP} §ahas been created."
+  group_removed: "§aGroup §6{GROUP} §ahas been removed."
+  player_group_set: "§aPlayer §b{PLAYER} §ahas been set to group §6{GROUP}"
+  permission_added: "§aPermission §b{PERMISSION} §ahas been added to group §6{GROUP}"
+  permission_removed: "§aPermission §b{PERMISSION} §ahas been removed from group §6{GROUP}"
+  faction_detected: "§aDetected faction plugin: {PLUGIN}"
+  no_faction_detected: "§cNo compatible faction plugin detected."
 ...

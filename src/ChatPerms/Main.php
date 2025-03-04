@@ -29,6 +29,7 @@ class Main extends PluginBase implements Listener {
     private $playerGroups;
     private $playerAttachments = [];
     private $factionPlugin = null;
+    private $messages;
 
     public function onEnable(): void {
         $this->getServer()->getPluginManager()->registerEvents($this, $this);
@@ -36,10 +37,31 @@ class Main extends PluginBase implements Listener {
         $this->config = $this->getConfig();
         $this->groups = $this->config->get("groups", []);
         $this->playerGroups = new Config($this->getDataFolder() . "players.yml", Config::YAML);
+        
+        // Initialize default messages if they don't exist
+        if (!$this->config->exists("messages")) {
+            $this->config->set("messages", [
+                "no_permission" => "§cYou don't have permission to use this command.",
+                "player_not_found" => "§cPlayer not found.",
+                "group_not_found" => "§cGroup not found.",
+                "group_already_exists" => "§cGroup already exists.",
+                "permission_already_exists" => "§cPermission already exists in the group.",
+                "permission_not_found" => "§cPermission not found in the group.",
+                "group_created" => "§aGroup §6{GROUP} §ahas been created.",
+                "group_removed" => "§aGroup §6{GROUP} §ahas been removed.",
+                "player_group_set" => "§aPlayer §b{PLAYER} §ahas been set to group §6{GROUP}",
+                "permission_added" => "§aPermission §b{PERMISSION} §ahas been added to group §6{GROUP}",
+                "permission_removed" => "§aPermission §b{PERMISSION} §ahas been removed from group §6{GROUP}",
+                "faction_detected" => "§aDetected faction plugin: {PLUGIN}",
+                "no_faction_detected" => "§cNo compatible faction plugin detected."
+            ]);
+            $this->config->save();
+        }
+        
+        $this->messages = $this->config->get("messages");
 
         $this->registerPermissions();
         $this->startNameTagUpdateTask();
-        $this->getServer()->getPluginManager()->registerEvents($this, $this);
         
         $this->getScheduler()->scheduleDelayedTask(new ClosureTask(
             function(): void {
@@ -47,8 +69,10 @@ class Main extends PluginBase implements Listener {
             }
         ), 20);
 
-        $this->config->set("rename_nametag", true);
-        $this->config->save();
+        if (!$this->config->exists("rename_nametag")) {
+            $this->config->set("rename_nametag", true);
+            $this->config->save();
+        }
     }
 
     private function detectFactionPlugin(): void {
@@ -59,12 +83,12 @@ class Main extends PluginBase implements Listener {
             $plugin = $pluginManager->getPlugin($pluginName);
             if ($plugin !== null && $plugin->isEnabled()) {
                 $this->factionPlugin = $plugin;
-                $this->getLogger()->info("§aDetected faction plugin: " . $pluginName);
+                $this->getLogger()->info($this->getMessage("faction_detected", ["PLUGIN" => $pluginName]));
                 return;
             }
         }
 
-        $this->getLogger()->info("§cNo compatible faction plugin detected.");
+        $this->getLogger()->info($this->getMessage("no_faction_detected"));
     }
 
     private function startNameTagUpdateTask(): void {
@@ -112,14 +136,14 @@ class Main extends PluginBase implements Listener {
             case "help":
                 return $this->handleHelpCommand($sender);
             default:
-                $sender->sendMessage(TextFormat::RED . "Unknown sub-command. Use /cp help for a list of commands.");
+                $sender->sendMessage($this->getMessage("unknown_command", ["COMMAND" => $subCommand]));
                 return true;
         }
     }
 
     private function handleSetGroupCommand(CommandSender $sender, array $args): bool {
         if (!$sender->hasPermission("chatperms.command.setgroup")) {
-            $sender->sendMessage(TextFormat::RED . "You don't have permission to use this command.");
+            $sender->sendMessage($this->getMessage("no_permission"));
             return true;
         }
         if (count($args) !== 2) {
@@ -128,22 +152,25 @@ class Main extends PluginBase implements Listener {
         }
         $player = $this->getServer()->getPlayerExact($args[0]);
         if ($player === null) {
-            $sender->sendMessage(TextFormat::RED . "Player not found.");
+            $sender->sendMessage($this->getMessage("player_not_found"));
             return true;
         }
         $group = $args[1];
         if (!isset($this->groups[$group])) {
-            $sender->sendMessage(TextFormat::RED . "Group not found.");
+            $sender->sendMessage($this->getMessage("group_not_found"));
             return true;
         }
         $this->setPlayerGroup($player, $group);
-        $sender->sendMessage(TextFormat::GREEN . "Player " . TextFormat::AQUA . $player->getName() . TextFormat::GREEN . " has been set to group " . TextFormat::GOLD . $group);
+        $sender->sendMessage($this->getMessage("player_group_set", [
+            "PLAYER" => $player->getName(),
+            "GROUP" => $group
+        ]));
         return true;
     }
 
     private function handleCreateGroupCommand(CommandSender $sender, array $args): bool {
         if (!$sender->hasPermission("chatperms.command.creategroup")) {
-            $sender->sendMessage(TextFormat::RED . "You don't have permission to use this command.");
+            $sender->sendMessage($this->getMessage("no_permission"));
             return true;
         }
         if (count($args) < 3) {
@@ -156,7 +183,7 @@ class Main extends PluginBase implements Listener {
         $permissions = array_slice($args, 3);
 
         if (isset($this->groups[$group])) {
-            $sender->sendMessage(TextFormat::RED . "Group already exists.");
+            $sender->sendMessage($this->getMessage("group_already_exists"));
             return true;
         }
 
@@ -171,13 +198,13 @@ class Main extends PluginBase implements Listener {
 
         $this->registerPermissions();
 
-        $sender->sendMessage(TextFormat::GREEN . "Group " . TextFormat::GOLD . $group . TextFormat::GREEN . " has been created.");
+        $sender->sendMessage($this->getMessage("group_created", ["GROUP" => $group]));
         return true;
     }
 
     private function handleRemoveGroupCommand(CommandSender $sender, array $args): bool {
         if (!$sender->hasPermission("chatperms.command.removegroup")) {
-            $sender->sendMessage(TextFormat::RED . "You don't have permission to use this command.");
+            $sender->sendMessage($this->getMessage("no_permission"));
             return true;
         }
         if (count($args) !== 1) {
@@ -186,19 +213,19 @@ class Main extends PluginBase implements Listener {
         }
         $group = $args[0];
         if (!isset($this->groups[$group])) {
-            $sender->sendMessage(TextFormat::RED . "Group not found.");
+            $sender->sendMessage($this->getMessage("group_not_found"));
             return true;
         }
         unset($this->groups[$group]);
         $this->config->set("groups", $this->groups);
         $this->config->save();
-        $sender->sendMessage(TextFormat::GREEN . "Group " . TextFormat::GOLD . $group . TextFormat::GREEN . " has been removed.");
+        $sender->sendMessage($this->getMessage("group_removed", ["GROUP" => $group]));
         return true;
     }
 
     private function handleAddGroupPermCommand(CommandSender $sender, array $args): bool {
         if (!$sender->hasPermission("chatperms.command.addgroupperm")) {
-            $sender->sendMessage(TextFormat::RED . "You don't have permission to use this command.");
+            $sender->sendMessage($this->getMessage("no_permission"));
             return true;
         }
         if (count($args) !== 2) {
@@ -208,24 +235,27 @@ class Main extends PluginBase implements Listener {
         $group = $args[0];
         $permission = $args[1];
         if (!isset($this->groups[$group])) {
-            $sender->sendMessage(TextFormat::RED . "Group not found.");
+            $sender->sendMessage($this->getMessage("group_not_found"));
             return true;
         }
         if (in_array($permission, $this->groups[$group]['permissions'])) {
-            $sender->sendMessage(TextFormat::RED . "Permission already exists in the group.");
+            $sender->sendMessage($this->getMessage("permission_already_exists"));
             return true;
         }
         $this->groups[$group]['permissions'][] = $permission;
         $this->config->set("groups", $this->groups);
         $this->config->save();
         $this->registerPermissions();
-        $sender->sendMessage(TextFormat::GREEN . "Permission " . TextFormat::AQUA . $permission . TextFormat::GREEN . " has been added to group " . TextFormat::GOLD . $group);
+        $sender->sendMessage($this->getMessage("permission_added", [
+            "PERMISSION" => $permission,
+            "GROUP" => $group
+        ]));
         return true;
     }
 
     private function handleRemoveGroupPermCommand(CommandSender $sender, array $args): bool {
         if (!$sender->hasPermission("chatperms.command.removegroupperm")) {
-            $sender->sendMessage(TextFormat::RED . "You don't have permission to use this command.");
+            $sender->sendMessage($this->getMessage("no_permission"));
             return true;
         }
         if (count($args) !== 2) {
@@ -235,19 +265,22 @@ class Main extends PluginBase implements Listener {
         $group = $args[0];
         $permission = $args[1];
         if (!isset($this->groups[$group])) {
-            $sender->sendMessage(TextFormat::RED . "Group not found.");
+            $sender->sendMessage($this->getMessage("group_not_found"));
             return true;
         }
         $key = array_search($permission, $this->groups[$group]['permissions']);
         if ($key === false) {
-            $sender->sendMessage(TextFormat::RED . "Permission not found in the group.");
+            $sender->sendMessage($this->getMessage("permission_not_found"));
             return true;
         }
         unset($this->groups[$group]['permissions'][$key]);
         $this->config->set("groups", $this->groups);
         $this->config->save();
         $this->registerPermissions();
-        $sender->sendMessage(TextFormat::GREEN . "Permission " . TextFormat::AQUA . $permission . TextFormat::GREEN . " has been removed from group " . TextFormat::GOLD . $group);
+        $sender->sendMessage($this->getMessage("permission_removed", [
+            "PERMISSION" => $permission,
+            "GROUP" => $group
+        ]));
         return true;
     }
 
@@ -404,5 +437,22 @@ class Main extends PluginBase implements Listener {
         $format = $this->getGroupNameTagFormat($group);
         $nameTag = $this->replacePlaceholders($format, $player, "", true);
         $player->setNameTag($nameTag);
+    }
+    
+    /**
+     * Gets a message from the config with placeholders replaced
+     * 
+     * @param string $key The message key in the config
+     * @param array $placeholders Array of placeholders to replace [placeholder => value]
+     * @return string The formatted message
+     */
+    private function getMessage(string $key, array $placeholders = []): string {
+        $message = $this->messages[$key] ?? "Message '$key' not found";
+        
+        foreach ($placeholders as $placeholder => $value) {
+            $message = str_replace("{{$placeholder}}", $value, $message);
+        }
+        
+        return $message;
     }
 }
