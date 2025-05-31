@@ -1,19 +1,19 @@
 ---
 groups:
   default:
-    chat_format: '§a[Member] {FACTION}{PLAYER}: {MESSAGE}'
-    nametag_format: §a[Member] {FACTION}{PLAYER} {HEALTH}
+    chat_format: '§a[Member] {FACTION}§f{PLAYER}: {MESSAGE}'
+    nametag_format: §a[Member] {FACTION}§f{PLAYER} {HEALTH}
     permissions:
     - chatperms.basic
   vip:
-    chat_format: '§6[VIP] {FACTION}{PLAYER}: §f{MESSAGE}'
-    nametag_format: §6[VIP] {FACTION}{PLAYER} {HEALTH}
+    chat_format: '§6[VIP] {FACTION}§f{PLAYER}: §f{MESSAGE}'
+    nametag_format: §6[VIP] {FACTION}§f{PLAYER} {HEALTH}
     permissions:
     - chatperms.basic
     - chatperms.vip
   admin:
-    chat_format: '§c[Admin] {FACTION}{PLAYER}: §f{MESSAGE}'
-    nametag_format: §c[Admin] {FACTION}{PLAYER} {HEALTH}
+    chat_format: '§c[Admin] {FACTION}§f{PLAYER}: §f{MESSAGE}'
+    nametag_format: §c[Admin] {FACTION}§f{PLAYER} {HEALTH}
     permissions:
     - chatperms.basic
     - chatperms.vip
@@ -34,4 +34,5 @@ messages:
   permission_removed: "§aPermission §b{PERMISSION} §ahas been removed from group §6{GROUP}"
   faction_detected: "§aDetected faction plugin: {PLUGIN}"
   no_faction_detected: "§cNo compatible faction plugin detected."
+  unknown_command: "§cUnknown command: {COMMAND}. Use /cp help for help."
 ...

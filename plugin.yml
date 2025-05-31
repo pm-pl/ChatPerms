@@ -28,6 +28,12 @@ permissions:
   chatperms.command.removegroupperm:
     description: Allows removing a permission from a group
     default: op
+  chatperms.command.listgroups:
+    description: Allows listing all groups
+    default: op
+  chatperms.command.checkplayer:
+    description: Allows checking a player's permissions
+    default: op
   chatperms.group.*:
     description: Wildcard permission for all ChatPerms groups
     default: false
