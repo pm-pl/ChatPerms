@@ -31,6 +31,11 @@ class Main extends PluginBase implements Listener {
     private $playerAttachments = [];
     private $factionPlugin = null;
     private $messages;
+    
+    private $muteData;
+    private $lastChatTime = [];
+    private $chatStats;
+    private $tempGroups;
 
     public function onEnable(): void {
         $this->getServer()->getPluginManager()->registerEvents($this, $this);
@@ -38,6 +43,9 @@ class Main extends PluginBase implements Listener {
         $this->config = $this->getConfig();
         $this->groups = $this->config->get("groups", []);
         $this->playerGroups = new Config($this->getDataFolder() . "players.yml", Config::YAML);
+        $this->muteData = new Config($this->getDataFolder() . "mutes.yml", Config::YAML);
+        $this->chatStats = new Config($this->getDataFolder() . "chat_stats.yml", Config::YAML);
+        $this->tempGroups = new Config($this->getDataFolder() . "temp_groups.yml", Config::YAML);
         
         if (!$this->config->exists("messages")) {
             $this->config->set("messages", [
@@ -54,7 +62,17 @@ class Main extends PluginBase implements Listener {
                 "permission_removed" => "§aPermission §b{PERMISSION} §ahas been removed from group §6{GROUP}",
                 "faction_detected" => "§aDetected faction plugin: {PLUGIN}",
                 "no_faction_detected" => "§cNo compatible faction plugin detected.",
-                "unknown_command" => "§cUnknown command: {COMMAND}. Use /cp help for help."
+                "unknown_command" => "§cUnknown command: {COMMAND}. Use /cp help for help.",
+                "player_muted" => "§cYou are muted! Reason: {REASON}. Time remaining: {TIME}",
+                "player_muted_permanent" => "§cYou are permanently muted! Reason: {REASON}",
+                "mute_success" => "§aSuccessfully muted §b{PLAYER} §afor {DURATION}. Reason: {REASON}",
+                "mute_success_permanent" => "§aSuccessfully permanently muted §b{PLAYER}. Reason: {REASON}",
+                "unmute_success" => "§aSuccessfully unmuted §b{PLAYER}",
+                "player_not_muted" => "§cPlayer {PLAYER} is not muted.",
+                "chat_cooldown" => "§cPlease wait {SECONDS} more seconds before sending another message.",
+                "already_muted" => "§cPlayer {PLAYER} is already muted.",
+                "invalid_duration" => "§cInvalid duration format. Use examples: 1m, 5h, 1d, 1w",
+                "tempgroup_expired" => "§aYour temporary group §6{GROUP} §ahas expired. You have been restored to your original group."
             ]);
             $this->config->save();
         }
@@ -63,6 +81,8 @@ class Main extends PluginBase implements Listener {
 
         $this->registerPermissions();
         $this->startNameTagUpdateTask();
+        $this->startMuteCheckTask();
+        $this->startTempGroupCheckTask();
         
         $this->getScheduler()->scheduleDelayedTask(new ClosureTask(
             function(): void {
@@ -76,10 +96,36 @@ class Main extends PluginBase implements Listener {
         }
     }
 
+    private function startMuteCheckTask(): void {
+        $this->getScheduler()->scheduleRepeatingTask(new ClosureTask(
+            function(): void {
+                $this->checkExpiredMutes();
+            }
+        ), 1200);
+    }
+
+    private function checkExpiredMutes(): void {
+        $currentTime = time();
+        $mutes = $this->muteData->getAll();
+        $updated = false;
+        foreach ($mutes as $playerName => $muteInfo) {
+            if (isset($muteInfo['expires']) && $muteInfo['expires'] > 0 && $muteInfo['expires'] <= $currentTime) {
+                $this->muteData->remove($playerName);
+                $updated = true;
+                $player = $this->getServer()->getPlayerExact($playerName);
+                if ($player !== null) {
+                    $player->sendMessage("§aYour mute has expired. You can now chat again.");
+                }
+            }
+        }
+        if ($updated) {
+            $this->muteData->save();
+        }
+    }
+
     private function detectFactionPlugin(): void {
         $pluginManager = $this->getServer()->getPluginManager();
         $factionPlugins = ['FactionsPro', 'PiggyFactions', 'SimpleFaction', 'Factions'];
-
         foreach ($factionPlugins as $pluginName) {
             $plugin = $pluginManager->getPlugin($pluginName);
             if ($plugin !== null && $plugin->isEnabled()) {
@@ -88,7 +134,6 @@ class Main extends PluginBase implements Listener {
                 return;
             }
         }
-
         $this->getLogger()->info($this->getMessage("no_faction_detected"));
     }
 
@@ -121,13 +166,10 @@ class Main extends PluginBase implements Listener {
         if ($command->getName() !== "cp" && $command->getName() !== "chatperms") {
             return false;
         }
-
         if (count($args) === 0) {
             return $this->handleHelpCommand($sender);
         }
-
         $subCommand = strtolower(array_shift($args));
-
         switch($subCommand) {
             case "setgroup":
                 return $this->handleSetGroupCommand($sender, $args);
@@ -143,11 +185,205 @@ class Main extends PluginBase implements Listener {
                 return $this->handleListGroupsCommand($sender, $args);
             case "checkplayer":
                 return $this->handleCheckPlayerCommand($sender, $args);
+            case "mute":
+                return $this->handleMuteCommand($sender, $args);
+            case "unmute":
+                return $this->handleUnmuteCommand($sender, $args);
+            case "mutelist":
+                return $this->handleMuteListCommand($sender, $args);
+            case "stats":
+                return $this->handleStatsCommand($sender, $args);
+            case "tempgroup":
+                return $this->handleTempGroupCommand($sender, $args);
+            case "tempgroupcheck":
+                return $this->handleTempGroupCheckCommand($sender, $args);
             case "help":
                 return $this->handleHelpCommand($sender);
             default:
                 $sender->sendMessage($this->getMessage("unknown_command", ["COMMAND" => $subCommand]));
                 return true;
+        }
+    }
+
+    private function handleMuteCommand(CommandSender $sender, array $args): bool {
+        if (!$sender->hasPermission("chatperms.command.mute")) {
+            $sender->sendMessage($this->getMessage("no_permission"));
+            return true;
+        }
+
+        if (count($args) < 1) {
+            $sender->sendMessage(TextFormat::YELLOW . "Usage: " . TextFormat::WHITE . "/cp mute <player> [duration] [reason]");
+            return true;
+        }
+
+        $playerName = $args[0];
+        $duration = $args[1] ?? "permanent";
+        $reason = isset($args[2]) ? implode(" ", array_slice($args, 2)) : "No reason specified";
+
+        if ($this->isPlayerMuted($playerName)) {
+            $sender->sendMessage($this->getMessage("already_muted", ["PLAYER" => $playerName]));
+            return true;
+        }
+
+        $expireTime = 0;
+        if ($duration !== "permanent") {
+            $expireTime = $this->parseDuration($duration);
+            if ($expireTime === false) {
+                $sender->sendMessage($this->getMessage("invalid_duration"));
+                return true;
+            }
+            $expireTime += time();
+        }
+
+        $muteData = [
+            "reason" => $reason,
+            "muted_by" => $sender->getName(),
+            "muted_at" => time(),
+            "expires" => $expireTime
+        ];
+
+        $this->muteData->set($playerName, $muteData);
+        $this->muteData->save();
+
+        if ($expireTime > 0) {
+            $sender->sendMessage($this->getMessage("mute_success", [
+                "PLAYER" => $playerName,
+                "DURATION" => $duration,
+                "REASON" => $reason
+            ]));
+        } else {
+            $sender->sendMessage($this->getMessage("mute_success_permanent", [
+                "PLAYER" => $playerName,
+                "REASON" => $reason
+            ]));
+        }
+
+        $player = $this->getServer()->getPlayerExact($playerName);
+        if ($player !== null) {
+            if ($expireTime > 0) {
+                $player->sendMessage($this->getMessage("player_muted", [
+                    "REASON" => $reason,
+                    "TIME" => $this->formatTime($expireTime - time())
+                ]));
+            } else {
+                $player->sendMessage($this->getMessage("player_muted_permanent", ["REASON" => $reason]));
+            }
+        }
+
+        return true;
+    }
+
+    private function handleUnmuteCommand(CommandSender $sender, array $args): bool {
+        if (!$sender->hasPermission("chatperms.command.unmute")) {
+            $sender->sendMessage($this->getMessage("no_permission"));
+            return true;
+        }
+
+        if (count($args) !== 1) {
+            $sender->sendMessage(TextFormat::YELLOW . "Usage: " . TextFormat::WHITE . "/cp unmute <player>");
+            return true;
+        }
+
+        $playerName = $args[0];
+
+        if (!$this->isPlayerMuted($playerName)) {
+            $sender->sendMessage($this->getMessage("player_not_muted", ["PLAYER" => $playerName]));
+            return true;
+        }
+
+        $this->muteData->remove($playerName);
+        $this->muteData->save();
+
+        $sender->sendMessage($this->getMessage("unmute_success", ["PLAYER" => $playerName]));
+
+        $player = $this->getServer()->getPlayerExact($playerName);
+        if ($player !== null) {
+            $player->sendMessage("§aYou have been unmuted by " . $sender->getName());
+        }
+
+        return true;
+    }
+
+    private function handleMuteListCommand(CommandSender $sender, array $args): bool {
+        if (!$sender->hasPermission("chatperms.command.mutelist")) {
+            $sender->sendMessage($this->getMessage("no_permission"));
+            return true;
+        }
+
+        $mutes = $this->muteData->getAll();
+        if (empty($mutes)) {
+            $sender->sendMessage(TextFormat::YELLOW . "No players are currently muted.");
+            return true;
+        }
+
+        $sender->sendMessage(TextFormat::YELLOW . "=== Muted Players ===");
+        $currentTime = time();
+
+        foreach ($mutes as $playerName => $muteInfo) {
+            $reason = $muteInfo['reason'] ?? "No reason";
+            $mutedBy = $muteInfo['muted_by'] ?? "Unknown";
+            $expires = $muteInfo['expires'] ?? 0;
+
+            if ($expires > 0) {
+                $remaining = $expires - $currentTime;
+                if ($remaining > 0) {
+                    $timeLeft = $this->formatTime($remaining);
+                    $sender->sendMessage(TextFormat::RED . $playerName . TextFormat::GRAY . " - " . TextFormat::WHITE . $reason . TextFormat::GRAY . " (by " . $mutedBy . ", " . $timeLeft . " left)");
+                }
+            } else {
+                $sender->sendMessage(TextFormat::RED . $playerName . TextFormat::GRAY . " - " . TextFormat::WHITE . $reason . TextFormat::GRAY . " (by " . $mutedBy . ", permanent)");
+            }
+        }
+
+        return true;
+    }
+
+    private function isPlayerMuted(string $playerName): bool {
+        if (!$this->muteData->exists($playerName)) {
+            return false;
+        }
+
+        $muteInfo = $this->muteData->get($playerName);
+        $expires = $muteInfo['expires'] ?? 0;
+
+        if ($expires > 0 && $expires <= time()) {
+            $this->muteData->remove($playerName);
+            $this->muteData->save();
+            return false;
+        }
+
+        return true;
+    }
+
+    private function parseDuration(string $duration): int|false {
+        if (!preg_match('/^(\d+)([smhdw])$/', $duration, $matches)) {
+            return false;
+        }
+
+        $value = (int)$matches[1];
+        $unit = $matches[2];
+
+        return match($unit) {
+            's' => $value,
+            'm' => $value * 60,
+            'h' => $value * 3600,
+            'd' => $value * 86400,
+            'w' => $value * 604800,
+            default => false
+        };
+    }
+
+    private function formatTime(int $seconds): string {
+        if ($seconds < 60) {
+            return $seconds . " seconds";
+        } elseif ($seconds < 3600) {
+            return round($seconds / 60) . " minutes";
+        } elseif ($seconds < 86400) {
+            return round($seconds / 3600) . " hours";
+        } elseif ($seconds < 604800) {
+            return round($seconds / 86400) . " days";
+        } else {
+            return round($seconds / 604800) . " weeks";
         }
     }
 
@@ -200,7 +436,8 @@ class Main extends PluginBase implements Listener {
         $this->groups[$group] = [
             'chat_format' => $chatFormat,
             'nametag_format' => $nametagFormat,
-            'permissions' => $permissions
+            'permissions' => $permissions,
+            'chat_cooldown' => 0
         ];
 
         $this->config->set("groups", $this->groups);
@@ -346,6 +583,7 @@ class Main extends PluginBase implements Listener {
             $sender->sendMessage(TextFormat::GREEN . "Group: " . TextFormat::AQUA . $groupName);
             $sender->sendMessage(TextFormat::GRAY . "Chat Format: " . TextFormat::WHITE . ($groupData['chat_format'] ?? 'Not set'));
             $sender->sendMessage(TextFormat::GRAY . "Nametag Format: " . TextFormat::WHITE . ($groupData['nametag_format'] ?? 'Not set'));
+            $sender->sendMessage(TextFormat::GRAY . "Chat Cooldown: " . TextFormat::WHITE . ($groupData['chat_cooldown'] ?? 0) . " seconds");
             
             $permissions = $groupData['permissions'] ?? [];
             if (!empty($permissions)) {
@@ -385,16 +623,27 @@ class Main extends PluginBase implements Listener {
         
         $group = $this->getPlayerGroup($player);
         $groupData = $this->groups[$group] ?? [];
-        $groupPermissions = $groupData['permissions'] ?? [];
+        $directPermissions = $groupData['permissions'] ?? [];
+        $allPermissions = $this->getAllGroupPermissions($group);
         
         $sender->sendMessage(TextFormat::YELLOW . "=== Player Info: " . TextFormat::AQUA . $player->getName() . TextFormat::YELLOW . " ===");
         $sender->sendMessage(TextFormat::GRAY . "Group: " . TextFormat::WHITE . $group);
-        $sender->sendMessage(TextFormat::GRAY . "Group Permissions: " . TextFormat::WHITE . (empty($groupPermissions) ? "None" : implode(", ", $groupPermissions)));
+        
+        $inheritanceChain = $this->getInheritanceChain($group);
+        if (count($inheritanceChain) > 1) {
+            $sender->sendMessage(TextFormat::GRAY . "Inheritance: " . TextFormat::WHITE . implode(" → ", $inheritanceChain));
+        }
+        
+        $sender->sendMessage(TextFormat::GRAY . "Direct Permissions: " . TextFormat::WHITE . (empty($directPermissions) ? "None" : implode(", ", $directPermissions)));
+        $sender->sendMessage(TextFormat::GRAY . "All Permissions: " . TextFormat::WHITE . (empty($allPermissions) ? "None" : implode(", ", $allPermissions)));
         
         $hasAttachment = isset($this->playerAttachments[$player->getName()]);
         $sender->sendMessage(TextFormat::GRAY . "Has Permission Attachment: " . TextFormat::WHITE . ($hasAttachment ? "Yes" : "No"));
         
-        $testPermissions = array_merge($groupPermissions, ["chatperms.basic", "chatperms.vip", "chatperms.admin"]);
+        $isMuted = $this->isPlayerMuted($player->getName());
+        $sender->sendMessage(TextFormat::GRAY . "Is Muted: " . TextFormat::WHITE . ($isMuted ? "Yes" : "No"));
+        
+        $testPermissions = array_merge($allPermissions, ["chatperms.basic", "chatperms.vip", "chatperms.admin"]);
         $sender->sendMessage(TextFormat::GRAY . "Permission Tests:");
         foreach (array_unique($testPermissions) as $perm) {
             $hasPermission = $player->hasPermission($perm);
@@ -404,6 +653,20 @@ class Main extends PluginBase implements Listener {
         }
         
         return true;
+    }
+
+    private function getInheritanceChain(string $group): array {
+        $chain = [];
+        $current = $group;
+        $visited = [];
+
+        while ($current && !in_array($current, $visited)) {
+            $visited[] = $current;
+            $chain[] = $current;
+            $current = $this->groups[$current]['inherits'] ?? null;
+        }
+
+        return array_reverse($chain);
     }
     
     private function handleHelpCommand(CommandSender $sender): bool {
@@ -415,15 +678,57 @@ class Main extends PluginBase implements Listener {
         $sender->sendMessage(TextFormat::GREEN . "/cp removegroupperm " . TextFormat::AQUA . "<group> <permission>" . TextFormat::WHITE . " - Remove a permission from a group");
         $sender->sendMessage(TextFormat::GREEN . "/cp listgroups" . TextFormat::WHITE . " - List all groups");
         $sender->sendMessage(TextFormat::GREEN . "/cp checkplayer " . TextFormat::AQUA . "<player>" . TextFormat::WHITE . " - Check a player's permissions");
+        $sender->sendMessage(TextFormat::GREEN . "/cp mute " . TextFormat::AQUA . "<player> [duration] [reason]" . TextFormat::WHITE . " - Mute a player");
+        $sender->sendMessage(TextFormat::GREEN . "/cp unmute " . TextFormat::AQUA . "<player>" . TextFormat::WHITE . " - Unmute a player");
+        $sender->sendMessage(TextFormat::GREEN . "/cp mutelist" . TextFormat::WHITE . " - List all muted players");
+        $sender->sendMessage(TextFormat::GREEN . "/cp stats " . TextFormat::AQUA . "[player]" . TextFormat::WHITE . " - Show chat statistics");
+        $sender->sendMessage(TextFormat::GREEN . "/cp tempgroup " . TextFormat::AQUA . "<player> <group> <duration> [reason]" . TextFormat::WHITE . " - Create a temporary group");
+        $sender->sendMessage(TextFormat::GREEN . "/cp tempgroupcheck" . TextFormat::WHITE . " - Check temporary group status");
         $sender->sendMessage(TextFormat::GREEN . "/cp help" . TextFormat::WHITE . " - Show this help message");
         return true;
     }
 
     public function onChat(PlayerChatEvent $event): void {
         $player = $event->getPlayer();
-        $message = $event->getMessage();
+        $playerName = $player->getName();
+        
+        if ($this->isPlayerMuted($playerName)) {
+            $event->cancel();
+            $muteInfo = $this->muteData->get($playerName);
+            $reason = $muteInfo['reason'] ?? "No reason";
+            $expires = $muteInfo['expires'] ?? 0;
+            
+            if ($expires > 0) {
+                $timeLeft = $this->formatTime($expires - time());
+                $player->sendMessage($this->getMessage("player_muted", [
+                    "REASON" => $reason,
+                    "TIME" => $timeLeft
+                ]));
+            } else {
+                $player->sendMessage($this->getMessage("player_muted_permanent", ["REASON" => $reason]));
+            }
+            return;
+        }
         
         $group = $this->getPlayerGroup($player);
+        $cooldown = $this->groups[$group]['chat_cooldown'] ?? 0;
+        
+        if ($cooldown > 0) {
+            $lastTime = $this->lastChatTime[$playerName] ?? 0;
+            $currentTime = time();
+            $timeSince = $currentTime - $lastTime;
+            
+            if ($timeSince < $cooldown) {
+                $event->cancel();
+                $remaining = $cooldown - $timeSince;
+                $player->sendMessage($this->getMessage("chat_cooldown", ["SECONDS" => $remaining]));
+                return;
+            }
+            
+            $this->lastChatTime[$playerName] = $currentTime;
+        }
+        
+        $message = $event->getMessage();
         $format = $this->getGroupChatFormat($group);
         
         $formattedMessage = $this->replacePlaceholders($format, $player, $message, false);
@@ -433,10 +738,15 @@ class Main extends PluginBase implements Listener {
         foreach ($event->getRecipients() as $recipient) {
             $recipient->sendMessage($formattedMessage);
         }
+
+        $this->updateChatStats($player);
     }
 
     public function onPlayerJoin(PlayerJoinEvent $event): void {
         $player = $event->getPlayer();
+        
+        $this->checkPlayerTempGroup($player);
+        
         $this->updatePlayerPermissions($player);
         $this->updatePlayerNameTag($player);
     }
@@ -449,6 +759,8 @@ class Main extends PluginBase implements Listener {
             $player->removeAttachment($this->playerAttachments[$playerName]);
             unset($this->playerAttachments[$playerName]);
         }
+        
+        unset($this->lastChatTime[$playerName]);
     }
 
     private function getPlayerGroup(Player $player): string {
@@ -543,7 +855,7 @@ class Main extends PluginBase implements Listener {
 
     private function updatePlayerPermissions(Player $player): void {
         $group = $this->getPlayerGroup($player);
-        $permissions = $this->groups[$group]['permissions'] ?? [];
+        $permissions = $this->getAllGroupPermissions($group);
         
         if (isset($this->playerAttachments[$player->getName()])) {
             $player->removeAttachment($this->playerAttachments[$player->getName()]);
@@ -557,6 +869,38 @@ class Main extends PluginBase implements Listener {
         }
         
         $this->playerAttachments[$player->getName()] = $attachment;
+    }
+
+    private function getAllGroupPermissions(string $group): array {
+        if (!isset($this->groups[$group])) {
+            return [];
+        }
+
+        $allPermissions = [];
+        $visited = [];
+        $this->collectInheritedPermissions($group, $allPermissions, $visited);
+        
+        return array_unique($allPermissions);
+    }
+
+    private function collectInheritedPermissions(string $group, array &$permissions, array &$visited): void {
+        if (in_array($group, $visited) || !isset($this->groups[$group])) {
+            return;
+        }
+
+        $visited[] = $group;
+        $groupData = $this->groups[$group];
+
+        if (isset($groupData['inherits'])) {
+            $parentGroup = $groupData['inherits'];
+            $this->collectInheritedPermissions($parentGroup, $permissions, $visited);
+        }
+
+        if (isset($groupData['permissions'])) {
+            foreach ($groupData['permissions'] as $permission) {
+                $permissions[] = $permission;
+            }
+        }
     }
 
     public function onEntityDamage(EntityDamageEvent $event): void {
@@ -581,5 +925,283 @@ class Main extends PluginBase implements Listener {
         }
         
         return $message;
+    }
+
+    private function handleStatsCommand(CommandSender $sender, array $args): bool {
+        if (!$sender->hasPermission("chatperms.command.stats")) {
+            $sender->sendMessage($this->getMessage("no_permission"));
+            return true;
+        }
+
+        if (count($args) === 0) {
+            $this->showServerStats($sender);
+        } else {
+            $playerName = $args[0];
+            $this->showPlayerStats($sender, $playerName);
+        }
+
+        return true;
+    }
+
+    private function showServerStats(CommandSender $sender): void {
+        $allStats = $this->chatStats->getAll();
+        if (empty($allStats)) {
+            $sender->sendMessage(TextFormat::YELLOW . "No chat statistics available yet.");
+            return;
+        }
+
+        $totalMessages = 0;
+        $totalPlayers = count($allStats);
+        $mostActivePlayer = "";
+        $mostMessages = 0;
+
+        foreach ($allStats as $playerName => $stats) {
+            $messageCount = $stats['total_messages'] ?? 0;
+            $totalMessages += $messageCount;
+            
+            if ($messageCount > $mostMessages) {
+                $mostMessages = $messageCount;
+                $mostActivePlayer = $playerName;
+            }
+        }
+
+        $sender->sendMessage(TextFormat::YELLOW . "=== Server Chat Statistics ===");
+        $sender->sendMessage(TextFormat::GREEN . "Total Messages: " . TextFormat::WHITE . number_format($totalMessages));
+        $sender->sendMessage(TextFormat::GREEN . "Active Players: " . TextFormat::WHITE . $totalPlayers);
+        $sender->sendMessage(TextFormat::GREEN . "Most Active Player: " . TextFormat::WHITE . $mostActivePlayer . TextFormat::GRAY . " (" . number_format($mostMessages) . " messages)");
+        
+        if ($totalMessages > 0) {
+            $avgMessages = round($totalMessages / $totalPlayers, 1);
+            $sender->sendMessage(TextFormat::GREEN . "Average per Player: " . TextFormat::WHITE . $avgMessages . " messages");
+        }
+    }
+
+    private function showPlayerStats(CommandSender $sender, string $playerName): void {
+        if (!$this->chatStats->exists($playerName)) {
+            $sender->sendMessage(TextFormat::YELLOW . "No statistics found for player " . TextFormat::WHITE . $playerName);
+            return;
+        }
+
+        $stats = $this->chatStats->get($playerName);
+        $totalMessages = $stats['total_messages'] ?? 0;
+        $firstMessage = $stats['first_message'] ?? 0;
+        $lastMessage = $stats['last_message'] ?? 0;
+        $hourlyStats = $stats['hourly_stats'] ?? [];
+
+        $sender->sendMessage(TextFormat::YELLOW . "=== Chat Stats: " . TextFormat::AQUA . $playerName . TextFormat::YELLOW . " ===");
+        $sender->sendMessage(TextFormat::GREEN . "Total Messages: " . TextFormat::WHITE . number_format($totalMessages));
+        
+        if ($firstMessage > 0) {
+            $sender->sendMessage(TextFormat::GREEN . "First Message: " . TextFormat::WHITE . date("Y-m-d H:i:s", $firstMessage));
+        }
+        
+        if ($lastMessage > 0) {
+            $sender->sendMessage(TextFormat::GREEN . "Last Message: " . TextFormat::WHITE . date("Y-m-d H:i:s", $lastMessage));
+        }
+
+        if (!empty($hourlyStats)) {
+            $maxHour = array_keys($hourlyStats, max($hourlyStats))[0];
+            $maxMessages = $hourlyStats[$maxHour];
+            $sender->sendMessage(TextFormat::GREEN . "Most Active Hour: " . TextFormat::WHITE . $maxHour . ":00 - " . ($maxHour + 1) . ":00 " . TextFormat::GRAY . "(" . $maxMessages . " messages)");
+        }
+
+        if ($totalMessages > 0) {
+            $daysSinceFirst = max(1, (time() - $firstMessage) / 86400);
+            $messagesPerDay = round($totalMessages / $daysSinceFirst, 1);
+            $sender->sendMessage(TextFormat::GREEN . "Average per Day: " . TextFormat::WHITE . $messagesPerDay . " messages");
+        }
+    }
+
+    private function updateChatStats(Player $player): void {
+        $playerName = $player->getName();
+        $currentTime = time();
+        $currentHour = (int)date("H", $currentTime);
+
+        $stats = $this->chatStats->get($playerName, [
+            'total_messages' => 0,
+            'first_message' => $currentTime,
+            'last_message' => 0,
+            'hourly_stats' => []
+        ]);
+
+        $stats['total_messages']++;
+        $stats['last_message'] = $currentTime;
+        
+        if (!isset($stats['hourly_stats'][$currentHour])) {
+            $stats['hourly_stats'][$currentHour] = 0;
+        }
+        $stats['hourly_stats'][$currentHour]++;
+
+        $this->chatStats->set($playerName, $stats);
+        
+        if ($stats['total_messages'] % 10 === 0) {
+            $this->chatStats->save();
+        }
+    }
+
+    private function handleTempGroupCommand(CommandSender $sender, array $args): bool {
+        if (!$sender->hasPermission("chatperms.command.tempgroup")) {
+            $sender->sendMessage($this->getMessage("no_permission"));
+            return true;
+        }
+
+        if (count($args) < 3) {
+            $sender->sendMessage(TextFormat::YELLOW . "Usage: " . TextFormat::WHITE . "/cp tempgroup <player> <group> <duration> [reason]");
+            return true;
+        }
+
+        $playerName = $args[0];
+        $group = $args[1];
+        $duration = $args[2];
+        $reason = isset($args[3]) ? implode(" ", array_slice($args, 3)) : "No reason specified";
+
+        $player = $this->getServer()->getPlayerExact($playerName);
+        if ($player === null) {
+            $sender->sendMessage($this->getMessage("player_not_found"));
+            return true;
+        }
+
+        if (!isset($this->groups[$group])) {
+            $sender->sendMessage($this->getMessage("group_not_found"));
+            return true;
+        }
+
+        $expireTime = $this->parseDuration($duration);
+        if ($expireTime === false) {
+            $sender->sendMessage($this->getMessage("invalid_duration"));
+            return true;
+        }
+        $expireTime += time();
+
+        $originalGroup = $this->getPlayerGroup($player);
+
+        $this->tempGroups->set($playerName, [
+            'temp_group' => $group,
+            'original_group' => $originalGroup,
+            'expires' => $expireTime,
+            'reason' => $reason,
+            'assigned_by' => $sender->getName(),
+            'assigned_at' => time()
+        ]);
+        $this->tempGroups->save();
+
+        $this->setPlayerGroup($player, $group);
+
+        $sender->sendMessage("§aAssigned temporary group §6$group §ato §b$playerName §afor $duration. Reason: $reason");
+        $player->sendMessage("§aYou have been assigned to temporary group §6$group §afor $duration. Reason: $reason");
+
+        return true;
+    }
+
+    private function startTempGroupCheckTask(): void {
+        $this->getScheduler()->scheduleRepeatingTask(new ClosureTask(
+            function(): void {
+                $this->checkExpiredTempGroups();
+            }
+        ), 200);
+    }
+
+    private function checkExpiredTempGroups(): void {
+        $currentTime = time();
+        $tempGroups = $this->tempGroups->getAll();
+        
+        if (empty($tempGroups)) {
+            return;
+        }
+        
+        $updated = false;
+
+        foreach ($tempGroups as $playerName => $tempData) {
+            if (!is_array($tempData) || !isset($tempData['expires'])) {
+                $this->tempGroups->remove($playerName);
+                $updated = true;
+                continue;
+            }
+            
+            if ($tempData['expires'] <= $currentTime) {
+                $originalGroup = $tempData['original_group'] ?? 'default';
+                $tempGroup = $tempData['temp_group'] ?? 'unknown';
+                
+                $this->tempGroups->remove($playerName);
+                $updated = true;
+
+                $player = $this->getServer()->getPlayerExact($playerName);
+                if ($player !== null) {
+                    $this->setPlayerGroup($player, $originalGroup);
+                    $player->sendMessage($this->getMessage("tempgroup_expired", [
+                        "GROUP" => $tempGroup,
+                        "PLAYER" => $playerName
+                    ]));
+                } else {
+                    $this->playerGroups->set($playerName, $originalGroup);
+                    $this->playerGroups->save();
+                }
+            }
+        }
+
+        if ($updated) {
+            $this->tempGroups->save();
+        }
+    }
+
+    private function checkPlayerTempGroup(Player $player): void {
+        $playerName = $player->getName();
+        $tempData = $this->tempGroups->get($playerName, null);
+        if ($tempData !== null && is_array($tempData) && isset($tempData['expires']) && $tempData['expires'] <= time()) {
+            $originalGroup = $tempData['original_group'] ?? 'default';
+            $tempGroup = $tempData['temp_group'] ?? 'unknown';
+            $this->tempGroups->remove($playerName);
+            $this->tempGroups->save();
+            
+            $this->setPlayerGroup($player, $originalGroup);
+            
+            $player->sendMessage($this->getMessage("tempgroup_expired", [
+                "GROUP" => $tempGroup,
+                "PLAYER" => $playerName
+            ]));
+            
+            $this->getLogger()->info("Restored player $playerName from temp group $tempGroup to $originalGroup");
+        }
+    }
+
+    private function handleTempGroupCheckCommand(CommandSender $sender, array $args): bool {
+        if (!$sender->hasPermission("chatperms.command.tempgroupcheck")) {
+            $sender->sendMessage($this->getMessage("no_permission"));
+            return true;
+        }
+
+        if (count($args) !== 1) {
+            $sender->sendMessage(TextFormat::YELLOW . "Usage: " . TextFormat::WHITE . "/cp tempgroupcheck <player>");
+            return true;
+        }
+
+        $playerName = $args[0];
+        $player = $this->getServer()->getPlayerExact($playerName);
+        if ($player === null) {
+            $sender->sendMessage($this->getMessage("player_not_found"));
+            return true;
+        }
+
+        $tempData = $this->tempGroups->get($playerName, null);
+        if ($tempData === null || !is_array($tempData)) {
+            $sender->sendMessage(TextFormat::YELLOW . "Player " . TextFormat::WHITE . $playerName . TextFormat::YELLOW . " is not in a temporary group.");
+            return true;
+        }
+
+        $group = $tempData['temp_group'] ?? "unknown";
+        $reason = $tempData['reason'] ?? "No reason specified";
+        $remainingTime = $tempData['expires'] - time();
+        $duration = $remainingTime > 0 ? $this->formatTime($remainingTime) : "EXPIRED";
+
+        $sender->sendMessage(TextFormat::YELLOW . "=== Temporary Group Info: " . TextFormat::AQUA . $playerName . TextFormat::YELLOW . " ===");
+        $sender->sendMessage(TextFormat::GREEN . "Group: " . TextFormat::WHITE . $group);
+        $sender->sendMessage(TextFormat::GREEN . "Reason: " . TextFormat::WHITE . $reason);
+        $sender->sendMessage(TextFormat::GREEN . "Time Remaining: " . TextFormat::WHITE . $duration);
+        
+        if ($remainingTime <= 0) {
+            $sender->sendMessage(TextFormat::RED . "⚠ This temp group has expired and should be removed on next check!");
+        }
+
+        return true;
     }
 }

@@ -1,25 +1,38 @@
----
+# ChatPerms Plugin Configuration
+# This plugin allows you to set chat formats and nametags based on groups
+
+# Plugin version
+version: "1.2.0"
+
+# Group definitions
 groups:
   default:
     chat_format: '§a[Member] {FACTION}§f{PLAYER}: {MESSAGE}'
-    nametag_format: §a[Member] {FACTION}§f{PLAYER} {HEALTH}
+    nametag_format: '§a[Member] {FACTION}§f{PLAYER} {HEALTH}'
     permissions:
-    - chatperms.basic
+      - chatperms.basic
+    chat_cooldown: 2  # 2 second cooldown for default group
+  
   vip:
     chat_format: '§6[VIP] {FACTION}§f{PLAYER}: §f{MESSAGE}'
-    nametag_format: §6[VIP] {FACTION}§f{PLAYER} {HEALTH}
+    nametag_format: '§6[VIP] {FACTION}§f{PLAYER} {HEALTH}'
+    inherits: default  # VIP inherits all default permissions
     permissions:
-    - chatperms.basic
-    - chatperms.vip
+      - chatperms.vip
+    chat_cooldown: 1  # 1 second cooldown for VIP
+  
   admin:
     chat_format: '§c[Admin] {FACTION}§f{PLAYER}: §f{MESSAGE}'
-    nametag_format: §c[Admin] {FACTION}§f{PLAYER} {HEALTH}
+    nametag_format: '§c[Admin] {FACTION}§f{PLAYER} {HEALTH}'
+    inherits: vip  # Admin inherits default + vip permissions
     permissions:
-    - chatperms.basic
-    - chatperms.vip
-    - chatperms.admin
+      - chatperms.admin
+    chat_cooldown: 0  # No cooldown for admins
+
+# Plugin settings
 rename_nametag: true
 
+# Plugin messages
 messages:
   no_permission: "§cYou don't have permission to use this command."
   player_not_found: "§cPlayer not found."
@@ -35,4 +48,134 @@ messages:
   faction_detected: "§aDetected faction plugin: {PLUGIN}"
   no_faction_detected: "§cNo compatible faction plugin detected."
   unknown_command: "§cUnknown command: {COMMAND}. Use /cp help for help."
-...
+  player_muted: "§cYou are muted! Reason: {REASON}. Time remaining: {TIME}"
+  player_muted_permanent: "§cYou are permanently muted! Reason: {REASON}"
+  mute_success: "§aSuccessfully muted §b{PLAYER} §afor {DURATION}. Reason: {REASON}"
+  mute_success_permanent: "§aSuccessfully permanently muted §b{PLAYER}. Reason: {REASON}"
+  unmute_success: "§aSuccessfully unmuted §b{PLAYER}"
+  player_not_muted: "§cPlayer {PLAYER} is not muted."
+  chat_cooldown: "§cPlease wait {SECONDS} more seconds before sending another message."
+  already_muted: "§cPlayer {PLAYER} is already muted."
+  invalid_duration: "§cInvalid duration format. Use examples: 1m, 5h, 1d, 1w"
+  tempgroup_expired: "§aYour temporary group §6{GROUP} §ahas expired. You have been restored to your original group."
+  tempgroup_usage: "§cUsage: /cp tempgroup <player> <group> <duration> [reason]"
+  tempgroup_not_found: "§cTemporary group not found for §b{PLAYER}."
+  tempgroup_already_exists: "§cTemporary group §6{GROUP} §ahas already been created for §b{PLAYER}."
+  tempgroup_invalid_duration: "§cInvalid duration format. Use examples: 1m, 5h, 1d, 1w"
+  tempgroup_no_reason: "No reason specified"
+  tempgroup_success: "§aSuccessfully assigned temporary group §6{GROUP} §ato §b{PLAYER} §afor {DURATION}. Reason: {REASON}"
+  tempgroup_restore: "§aSuccessfully restored §b{PLAYER} §ato their original group."
+
+# ==========================================
+# COMMANDS DOCUMENTATION
+# ==========================================
+# All commands use the base command: /cp or /chatperms
+#
+# GROUP MANAGEMENT:
+# /cp creategroup <group> <chat_format> <nametag_format> [permissions...]
+#   - Creates a new group with specified formats and permissions
+#   - Example: /cp creategroup moderator "§9[MOD] §f{PLAYER}: §7{MESSAGE}" "§9[MOD] §f{PLAYER}" chatperms.moderate
+#
+# /cp removegroup <group>
+#   - Removes a group (players in deleted group move to default)
+#   - Example: /cp removegroup moderator
+#
+# /cp listgroups
+#   - Lists all groups with their settings and player counts
+#
+# PLAYER MANAGEMENT:
+# /cp setgroup <player> <group>
+#   - Sets a player's group
+#   - Example: /cp setgroup Steve vip
+#
+# /cp checkplayer <player>
+#   - Shows detailed information about a player's group, permissions, and mute status
+#   - Example: /cp checkplayer Steve
+#
+# PERMISSION MANAGEMENT:
+# /cp addgroupperm <group> <permission>
+#   - Adds a permission to a group
+#   - Example: /cp addgroupperm vip essentials.fly
+#
+# /cp removegroupperm <group> <permission>
+#   - Removes a permission from a group
+#   - Example: /cp removegroupperm vip essentials.fly
+#
+# MUTE SYSTEM:
+# /cp mute <player> [duration] [reason]
+#   - Mutes a player temporarily or permanently
+#   - Duration formats: 1s, 5m, 2h, 1d, 1w, or "permanent"
+#   - Examples: 
+#     /cp mute BadPlayer 30m Spamming in chat
+#     /cp mute ToxicPlayer permanent Harassment
+#     /cp mute Griefer 1d
+#
+# /cp unmute <player>
+#   - Unmutes a player
+#   - Example: /cp unmute BadPlayer
+#
+# /cp mutelist
+#   - Shows all currently muted players with details
+#
+# CHAT STATISTICS:
+# /cp stats
+#   - Shows server-wide chat statistics
+#   - Displays: total messages, most active player, averages
+# /cp stats <player>
+#   - Shows detailed statistics for a specific player
+#   - Tracks: total messages, first/last message, most active hour, daily average
+#
+# TEMPORARY GROUPS:
+# /cp tempgroup <player> <group> <duration> [reason]
+#   - Assigns a player to a group temporarily
+#   - Player automatically returns to original group when time expires
+#   - Examples:
+#     /cp tempgroup Steve admin 1d Temporary admin for event
+#     /cp tempgroup Alex vip 1w Trial VIP period
+#
+# HELP:
+# /cp help
+#   - Shows all available commands
+#
+# ==========================================
+# PLACEHOLDERS FOR FORMATS
+# ==========================================
+# {PLAYER} - Player's username
+# {MESSAGE} - Chat message (only for chat_format)
+# {WORLD} - Current world name
+# {HEALTH} - Player's health with color coding (only for nametag_format)
+# {FACTION} - Player's faction name (if faction plugin detected)
+#
+# COLOR CODES:
+# §0 = Black    §1 = Dark Blue    §2 = Dark Green   §3 = Dark Aqua
+# §4 = Dark Red §5 = Dark Purple  §6 = Gold         §7 = Gray
+# §8 = Dark Gray §9 = Blue        §a = Green        §b = Aqua
+# §c = Red      §d = Light Purple §e = Yellow       §f = White
+# §l = Bold     §o = Italic       §n = Underline    §m = Strikethrough
+# §k = Obfuscated §r = Reset
+#
+# ==========================================
+# DURATION FORMATS FOR MUTE SYSTEM
+# ==========================================
+# s = seconds   (example: 30s = 30 seconds)
+# m = minutes   (example: 15m = 15 minutes)
+# h = hours     (example: 2h = 2 hours)
+# d = days      (example: 1d = 1 day)
+# w = weeks     (example: 1w = 1 week)
+# permanent = never expires
+#
+# ==========================================
+# GROUP INHERITANCE SYSTEM
+# ==========================================
+# Groups can inherit permissions from other groups using the "inherits" property
+# This creates a clean hierarchy and reduces config duplication
+#
+# Current Setup:
+# default (chatperms.basic) → vip (+ chatperms.vip) → admin (+ chatperms.admin)
+#
+# Example of inheritance in action:
+# - default group: gets chatperms.basic
+# - vip group: gets chatperms.basic + chatperms.vip (inherits from default)
+# - admin group: gets chatperms.basic + chatperms.vip + chatperms.admin (inherits from vip)
+#
+# ==========================================
